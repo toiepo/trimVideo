@@ -1,0 +1,96 @@
+import android.media.MediaExtractor;
+import android.media.MediaFormat;
+import android.media.MediaMuxer;
+import android.media.MediaCodec;
+import android.util.Log;
+import java.io.IOException;
+import java.nio.ByteBuffer;
+
+public class VideoTrimmer {
+
+    public static void trimVideo(String inputPath, String outputPath, long startMs, long endMs) throws IOException {
+        MediaExtractor extractor = new MediaExtractor();
+        extractor.setDataSource(inputPath);
+
+        int videoTrackIndex = -1;
+        int audioTrackIndex = -1;
+        for (int i = 0; i < extractor.getTrackCount(); i++) {
+            MediaFormat format = extractor.getTrackFormat(i);
+            String mime = format.getString(MediaFormat.KEY_MIME);
+            if (mime.startsWith("video/")) {
+                videoTrackIndex = i;
+            } else if (mime.startsWith("audio/")) {
+                audioTrackIndex = i;
+            }
+        }
+
+        if (videoTrackIndex == -1) {
+            throw new IllegalArgumentException("No video track found in " + inputPath);
+        }
+
+        extractor.selectTrack(videoTrackIndex);
+        if (audioTrackIndex != -1) {
+            extractor.selectTrack(audioTrackIndex);
+        }
+
+        MediaMuxer muxer = new MediaMuxer(outputPath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4);
+        int outputVideoTrack = muxer.addTrack(extractor.getTrackFormat(videoTrackIndex));
+        int outputAudioTrack = -1;
+        if (audioTrackIndex != -1) {
+            outputAudioTrack = muxer.addTrack(extractor.getTrackFormat(audioTrackIndex));
+        }
+        muxer.start();
+
+        // Trim the video track
+        extractor.seekTo(startMs * 1000, MediaExtractor.SEEK_TO_CLOSEST_SYNC);
+        MediaCodec.BufferInfo bufferInfo = new MediaCodec.BufferInfo();
+        ByteBuffer buffer = ByteBuffer.allocate(1024 * 1024);
+
+        while (true) {
+            bufferInfo.offset = 0;
+            bufferInfo.size = extractor.readSampleData(buffer, 0);
+            if (bufferInfo.size < 0) {
+                break;
+            }
+
+            long sampleTime = extractor.getSampleTime();
+            if (sampleTime > endMs * 1000) {
+                break;
+            }
+
+            bufferInfo.presentationTimeUs = sampleTime;
+            bufferInfo.flags = extractor.getSampleFlags();
+            muxer.writeSampleData(outputVideoTrack, buffer, bufferInfo);
+            extractor.advance();
+        }
+
+        // Trim the audio track if it exists
+        if (audioTrackIndex != -1) {
+            extractor.unselectTrack(videoTrackIndex);
+            extractor.selectTrack(audioTrackIndex);
+            extractor.seekTo(startMs * 1000, MediaExtractor.SEEK_TO_CLOSEST_SYNC);
+
+            while (true) {
+                bufferInfo.offset = 0;
+                bufferInfo.size = extractor.readSampleData(buffer, 0);
+                if (bufferInfo.size < 0) {
+                    break;
+                }
+
+                long sampleTime = extractor.getSampleTime();
+                if (sampleTime > endMs * 1000) {
+                    break;
+                }
+
+                bufferInfo.presentationTimeUs = sampleTime;
+                bufferInfo.flags = extractor.getSampleFlags();
+                muxer.writeSampleData(outputAudioTrack, buffer, bufferInfo);
+                extractor.advance();
+            }
+        }
+
+        muxer.stop();
+        muxer.release();
+        extractor.release();
+    }
+}
