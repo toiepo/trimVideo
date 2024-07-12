@@ -1,44 +1,62 @@
-public class VideoTranscoder {
+public class VideoAudioTranscoder {
 
     private static final int TIMEOUT_USEC = 10000; // Timeout for buffer operations
 
-    private MediaCodec decoder;
-    private MediaCodec encoder;
-    private MediaExtractor extractor;
+    private MediaCodec videoDecoder;
+    private MediaCodec videoEncoder;
+    private MediaCodec audioDecoder;
+    private MediaCodec audioEncoder;
+    private MediaExtractor videoExtractor;
+    private MediaExtractor audioExtractor;
 
-    public void transcodeVideo(String videoFilePath, Surface surface) throws IOException {
-        extractor = new MediaExtractor();
-        extractor.setDataSource(videoFilePath);
+    public void transcodeVideoAndAudio(String videoFilePath, Surface surface) throws IOException {
+        videoExtractor = new MediaExtractor();
+        videoExtractor.setDataSource(videoFilePath);
 
-        int trackIndex = selectTrack(extractor);
-        extractor.selectTrack(trackIndex);
+        audioExtractor = new MediaExtractor();
+        audioExtractor.setDataSource(videoFilePath);
 
-        MediaFormat format = extractor.getTrackFormat(trackIndex);
-        String mimeType = format.getString(MediaFormat.KEY_MIME);
+        int videoTrackIndex = selectTrack(videoExtractor, "video/");
+        int audioTrackIndex = selectTrack(audioExtractor, "audio/");
 
-        decoder = MediaCodec.createDecoderByType(mimeType);
-        decoder.configure(format, surface, null, 0);
+        videoExtractor.selectTrack(videoTrackIndex);
+        audioExtractor.selectTrack(audioTrackIndex);
 
-        MediaFormat outputFormat = MediaFormat.createVideoFormat("video/avc", format.getInteger(MediaFormat.KEY_WIDTH), format.getInteger(MediaFormat.KEY_HEIGHT));
-        outputFormat.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible);
-        outputFormat.setInteger(MediaFormat.KEY_BIT_RATE, 1000000); // Example bitrate
-        outputFormat.setInteger(MediaFormat.KEY_FRAME_RATE, 30); // Example frame rate
-        outputFormat.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1); // Example I-frame interval
+        MediaFormat videoFormat = videoExtractor.getTrackFormat(videoTrackIndex);
+        MediaFormat audioFormat = audioExtractor.getTrackFormat(audioTrackIndex);
 
-        encoder = MediaCodec.createEncoderByType("video/avc");
-        encoder.configure(outputFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
+        videoDecoder = MediaCodec.createDecoderByType(videoFormat.getString(MediaFormat.KEY_MIME));
+        videoDecoder.configure(videoFormat, surface, null, 0);
 
-        decoder.setCallback(new MediaCodec.Callback() {
+        MediaFormat videoOutputFormat = MediaFormat.createVideoFormat("video/avc", videoFormat.getInteger(MediaFormat.KEY_WIDTH), videoFormat.getInteger(MediaFormat.KEY_HEIGHT));
+        videoOutputFormat.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible);
+        videoOutputFormat.setInteger(MediaFormat.KEY_BIT_RATE, 1000000); // Example bitrate
+        videoOutputFormat.setInteger(MediaFormat.KEY_FRAME_RATE, 30); // Example frame rate
+        videoOutputFormat.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1); // Example I-frame interval
+
+        videoEncoder = MediaCodec.createEncoderByType("video/avc");
+        videoEncoder.configure(videoOutputFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
+
+        audioDecoder = MediaCodec.createDecoderByType(audioFormat.getString(MediaFormat.KEY_MIME));
+        audioDecoder.configure(audioFormat, null, null, 0);
+
+        MediaFormat audioOutputFormat = MediaFormat.createAudioFormat("audio/mp4a-latm", audioFormat.getInteger(MediaFormat.KEY_SAMPLE_RATE), audioFormat.getInteger(MediaFormat.KEY_CHANNEL_COUNT));
+        audioOutputFormat.setInteger(MediaFormat.KEY_BIT_RATE, 64000); // Example bitrate
+
+        audioEncoder = MediaCodec.createEncoderByType("audio/mp4a-latm");
+        audioEncoder.configure(audioOutputFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
+
+        videoDecoder.setCallback(new MediaCodec.Callback() {
             @Override
             public void onInputBufferAvailable(MediaCodec codec, int index) {
                 ByteBuffer inputBuffer = codec.getInputBuffer(index);
-                int sampleSize = extractor.readSampleData(inputBuffer, 0);
+                int sampleSize = videoExtractor.readSampleData(inputBuffer, 0);
                 if (sampleSize < 0) {
                     codec.queueInputBuffer(index, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM);
                 } else {
-                    long presentationTimeUs = extractor.getSampleTime();
+                    long presentationTimeUs = videoExtractor.getSampleTime();
                     codec.queueInputBuffer(index, 0, sampleSize, presentationTimeUs, 0);
-                    extractor.advance();
+                    videoExtractor.advance();
                 }
             }
 
@@ -48,7 +66,7 @@ public class VideoTranscoder {
                 if (info.size > 0) {
                     outputBuffer.position(info.offset);
                     outputBuffer.limit(info.offset + info.size);
-                    encode(outputBuffer, info);
+                    encodeVideo(outputBuffer, info);
                 }
                 codec.releaseOutputBuffer(index, false);
             }
@@ -64,7 +82,43 @@ public class VideoTranscoder {
             }
         });
 
-        encoder.setCallback(new MediaCodec.Callback() {
+        audioDecoder.setCallback(new MediaCodec.Callback() {
+            @Override
+            public void onInputBufferAvailable(MediaCodec codec, int index) {
+                ByteBuffer inputBuffer = codec.getInputBuffer(index);
+                int sampleSize = audioExtractor.readSampleData(inputBuffer, 0);
+                if (sampleSize < 0) {
+                    codec.queueInputBuffer(index, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM);
+                } else {
+                    long presentationTimeUs = audioExtractor.getSampleTime();
+                    codec.queueInputBuffer(index, 0, sampleSize, presentationTimeUs, 0);
+                    audioExtractor.advance();
+                }
+            }
+
+            @Override
+            public void onOutputBufferAvailable(MediaCodec codec, int index, MediaCodec.BufferInfo info) {
+                ByteBuffer outputBuffer = codec.getOutputBuffer(index);
+                if (info.size > 0) {
+                    outputBuffer.position(info.offset);
+                    outputBuffer.limit(info.offset + info.size);
+                    encodeAudio(outputBuffer, info);
+                }
+                codec.releaseOutputBuffer(index, false);
+            }
+
+            @Override
+            public void onError(MediaCodec codec, MediaCodec.CodecException e) {
+                e.printStackTrace();
+            }
+
+            @Override
+            public void onOutputFormatChanged(MediaCodec codec, MediaFormat format) {
+                // Handle format change if necessary
+            }
+        });
+
+        videoEncoder.setCallback(new MediaCodec.Callback() {
             @Override
             public void onInputBufferAvailable(MediaCodec codec, int index) {
                 // Handle input buffer availability for encoding
@@ -76,7 +130,7 @@ public class VideoTranscoder {
                 if (info.size > 0) {
                     outputBuffer.position(info.offset);
                     outputBuffer.limit(info.offset + info.size);
-                    // Write encoded data to file or further processing
+                    // Write encoded video data to file or further processing
                 }
                 codec.releaseOutputBuffer(index, false);
             }
@@ -92,28 +146,69 @@ public class VideoTranscoder {
             }
         });
 
-        decoder.start();
-        encoder.start();
+        audioEncoder.setCallback(new MediaCodec.Callback() {
+            @Override
+            public void onInputBufferAvailable(MediaCodec codec, int index) {
+                // Handle input buffer availability for encoding
+            }
+
+            @Override
+            public void onOutputBufferAvailable(MediaCodec codec, int index, MediaCodec.BufferInfo info) {
+                ByteBuffer outputBuffer = codec.getOutputBuffer(index);
+                if (info.size > 0) {
+                    outputBuffer.position(info.offset);
+                    outputBuffer.limit(info.offset + info.size);
+                    // Write encoded audio data to file or further processing
+                }
+                codec.releaseOutputBuffer(index, false);
+            }
+
+            @Override
+            public void onError(MediaCodec codec, MediaCodec.CodecException e) {
+                e.printStackTrace();
+            }
+
+            @Override
+            public void onOutputFormatChanged(MediaCodec codec, MediaFormat format) {
+                // Handle format change if necessary
+            }
+        });
+
+        videoDecoder.start();
+        videoEncoder.start();
+
+        audioDecoder.start();
+        audioEncoder.start();
     }
 
-    private int selectTrack(MediaExtractor extractor) {
+    private int selectTrack(MediaExtractor extractor, String mimePrefix) {
         for (int i = 0; i < extractor.getTrackCount(); i++) {
             MediaFormat format = extractor.getTrackFormat(i);
             String mime = format.getString(MediaFormat.KEY_MIME);
-            if (mime.startsWith("video/")) {
+            if (mime.startsWith(mimePrefix)) {
                 return i;
             }
         }
-        throw new IllegalArgumentException("No video track found in " + extractor);
+        throw new IllegalArgumentException("No " + mimePrefix + " track found in " + extractor);
     }
 
-    private void encode(ByteBuffer buffer, MediaCodec.BufferInfo info) {
-        int inputBufferIndex = encoder.dequeueInputBuffer(TIMEOUT_USEC);
+    private void encodeVideo(ByteBuffer buffer, MediaCodec.BufferInfo info) {
+        int inputBufferIndex = videoEncoder.dequeueInputBuffer(TIMEOUT_USEC);
         if (inputBufferIndex >= 0) {
-            ByteBuffer inputBuffer = encoder.getInputBuffer(inputBufferIndex);
+            ByteBuffer inputBuffer = videoEncoder.getInputBuffer(inputBufferIndex);
             inputBuffer.clear();
             inputBuffer.put(buffer);
-            encoder.queueInputBuffer(inputBufferIndex, 0, info.size, info.presentationTimeUs, info.flags);
+            videoEncoder.queueInputBuffer(inputBufferIndex, 0, info.size, info.presentationTimeUs, info.flags);
+        }
+    }
+
+    private void encodeAudio(ByteBuffer buffer, MediaCodec.BufferInfo info) {
+        int inputBufferIndex = audioEncoder.dequeueInputBuffer(TIMEOUT_USEC);
+        if (inputBufferIndex >= 0) {
+            ByteBuffer inputBuffer = audioEncoder.getInputBuffer(inputBufferIndex);
+            inputBuffer.clear();
+            inputBuffer.put(buffer);
+            audioEncoder.queueInputBuffer(inputBufferIndex, 0, info.size, info.presentationTimeUs, info.flags);
         }
     }
 }
